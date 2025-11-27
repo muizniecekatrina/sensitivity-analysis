@@ -1,0 +1,126 @@
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import xlwings as xw
+import time
+from SALib.sample import saltelli
+from SALib.analyze import sobol
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+
+# Definē problēmu ar parametriem un robežām
+problem = {
+    'num_vars': 11,
+    'names': ['Lime', 'Dol', 'NH4NO3', '(NH4)2SO4', '(NH4)2HPO4', 'CAN', 'Ca(NO3)2', 'KAS', '(NH4)(H2PO4)',
+             'NPK', 'Urea'],
+    'bounds': [[0, 200]] * 11
+}
+
+# Ģenerē ievades vērtības
+param_values = saltelli.sample(problem, N=128, calc_second_order=True)
+print("Simulāciju skaits:", len(param_values))
+
+
+# Atver Excel rīku
+wb = xw.Book(r"source")
+sheet = wb.sheets["Aramzemes"]
+
+# Definē modeli
+def model(x):
+    cells = ["C29", "C30", "C31", "C32", "C33", "C34", "C35", "C36", "C37", "C38", "C39"]
+
+    # Aizpilda ievades vērtības
+    for i, cell in enumerate(cells):
+        sheet[cell].value = x[i]
+
+    # Dod Excel brīdi pārrēķinam
+    time.sleep(0.12)
+    wb.app.calculate()
+
+    # Nolasa rezultātu
+    result_sheet = wb.sheets["Emisiju kopsavilkums"]
+    emission_value = result_sheet["C25"].value
+
+    # Ja rezultāts nav skaitlis, atkārto dažas reizes
+    tries = 0
+    while (emission_value is None or isinstance(emission_value, str)) and tries < 10:
+        time.sleep(0.12)
+        emission_value = result_sheet["C25"].value
+        tries += 1
+
+    return float(emission_value) if emission_value is not None else 0.0
+
+# Veic simulācijas
+Y = np.array([model(x) for x in param_values])
+print("Y garums:", len(Y))
+
+# Ja ir NaN, aizstāj ar vidējo
+if np.isnan(Y).any():
+    print("Brīdinājums: bija tukši rezultāti")
+    mean_val = np.nanmean(Y)
+    Y = np.nan_to_num(Y, nan=mean_val)
+
+# Sobol analīze
+Si = sobol.analyze(problem, Y, calc_second_order=True, print_to_console=True)
+
+# Create DataFrame for Sobol indices
+sobol_df = pd.DataFrame({
+    'Parameter': problem['names'],
+    'S1': Si['S1'],
+    'S1_conf': Si['S1_conf'],
+    'ST': Si['ST'],
+    'ST_conf': Si['ST_conf']
+})
+
+# Export Sobol indices to Excel
+sobol_df.to_excel("sobol_indices.xlsx", index=False)
+
+
+# Izvada galvenos indeksus
+print("\n--- Sobol analīzes rezultāti ---")
+for name, s1, st in zip(problem['names'], Si['S1'], Si['ST']):
+    print(f"{name:25s} | S1 = {s1:.4f} | ST = {st:.4f}")
+
+#Diagramma
+import matplotlib.pyplot as plt
+
+plt.bar(problem['names'], Si['S1'])
+plt.ylabel("First-order Sobol sensitivity index")
+plt.title("Parameter impact on GHG emissions")
+plt.xticks(rotation=90)
+plt.show()
+
+
+# Create subplots grid (adjust rows/cols depending on number of parameters)
+n_params = len(problem['names'])
+n_cols = 3
+n_rows = (n_params + n_cols - 1) // n_cols
+
+fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(5*n_cols, 4*n_rows))
+
+axes = axes.flatten()
+
+
+df = pd.DataFrame(param_values, columns=problem['names'])
+
+# Add the output values to the DataFrame
+df['Output_Y'] = Y
+
+
+for i, param in enumerate(problem['names']):
+    sns.regplot(
+        x=df[param], y=df['Output_Y'],
+        scatter_kws={'alpha':0.3, 's':15}, line_kws={'color':'red'}, ax=axes[i]
+    )
+    axes[i].set_title(f"{param} vs GHG emissions")
+    axes[i].set_xlabel("Parameter Value")
+    axes[i].set_ylabel("GHG emissions")
+
+# Hide unused subplots if any
+for j in range(i+1, len(axes)):
+    fig.delaxes(axes[j])
+
+plt.tight_layout()
+plt.show()
