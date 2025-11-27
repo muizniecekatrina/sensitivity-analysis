@@ -1,0 +1,135 @@
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import xlwings as xw
+import time
+from SALib.sample import morris
+from SALib.analyze import morris as morris_analyze
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# ==== Define problem ====
+problem = {
+    'num_vars': 76,
+    'names': ['NG', 'Dies', 'Coal', 'LPG', 'Prop', 'WC', 'FW', 'WP', 'GS', 'Peat', 'TDies', 'Petrol', 'El', 'LNG',
+             'TLPG', 'CNG', 'AdBlue', 'RE', 'PRE', 'Non_RE', 'HE', 'Col', 'Steam', 'AL', 'AF', 'AAL', 'GL', 'FL',
+             'DegrL', 'Bog', 'OrgAL', 'DC', 'CT', 'FP', 'Sow', 'SH', 'GT', 'HO', 'LH', 'BR', 'TR', 'DK', 'GOS', 'DE',
+             'FA', 'Infra', 'Wh', 'Pot', 'Oat', 'Vgt', 'Mix', 'Wood', 'BWh', 'Trit', 'FB', 'RS', 'CS',
+             'Bar', 'SB', 'Rye', 'Peas', 'Lin', 'Hemp', 'Other', 'Lime', 'Dol', 'NH4NO3', '(NH4)2SO4', '(NH4)2HPO4',
+             'CAN', 'Ca(NO3)2', 'KAS', '(NH4)(H2PO4)', 'NPK', 'Urea'],
+    'bounds': [[0, 200]] * 75
+}
+
+# ==== Generate Morris sample ====
+param_values = morris.sample(problem, N=128, num_levels=4)
+print("Number of simulations:", len(param_values))
+
+wb = xw.Book(r"Source")
+
+# ==== Improve Excel performance ====
+wb.app.calculation = 'manual'
+wb.app.screen_updating = False
+wb.app.display_alerts = False
+
+# ==== inputs per sheet ====
+input_config = {
+    "1. tvērums": ["C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17",
+                   "C21", "C22", "C23", "C24", "C25", "C26", "C27"],
+    "2. tvērums": ["C9", "C10", "C11", "C15", "C16", "C17"],
+    "Zemes platības": ["C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15"],
+    "Dzīvnieku uzturēšana": ["D8", "D9", "D10", "D11", "D12", "D13", "D14", "D15", "D16", "D17",
+                            "D18", "D19", "D20", "D21"],
+    "Aramzemes": ["C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
+                  "C19", "C20", "C21", "C22", "C23", "C24", "C25", "C29", "C30", "C31", "C32", "C33",
+                  "C34", "C35", "C36", "C37", "C38", "C39"]
+}
+
+# ==== outputs ====
+output_config = {
+    "Emisiju kopsavilkums": "C25"
+}
+
+# ==== Optimized model function ====
+def model(x):
+    idx = 0
+    for sheet_name, cells in input_config.items():
+        sh = wb.sheets[sheet_name]
+        values_to_write = x[idx:idx + len(cells)]
+        idx += len(cells)
+
+        # Write entire block if contiguous, else write cell-by-cell
+        try:
+            start_cell = cells[0]
+            sh.range(start_cell).options(transpose=True).value = values_to_write
+        except Exception:
+            for i, cell in enumerate(cells):
+                sh[cell].value = values_to_write[i]
+
+    wb.app.calculate()  # manual calculation
+
+    results = {}
+    for sheet_name, cell in output_config.items():
+        result_sheet = wb.sheets[sheet_name]
+        val = result_sheet[cell].value
+        tries = 0
+        while (val is None or isinstance(val, str)) and tries < 10:
+            time.sleep(0.05)
+            val = result_sheet[cell].value
+            tries += 1
+        results[sheet_name] = float(val) if val is not None else 0.0
+
+    return results
+
+# ==== Run model on Morris samples ====
+Y_results = {name: [] for name in output_config.keys()}
+start_time = time.time()
+
+for i, x in enumerate(param_values):
+    res = model(x)
+    for name, val in res.items():
+        Y_results[name].append(val)
+
+    # Progress feedback
+    if (i + 1) % 10 == 0 or i == len(param_values) - 1:
+        elapsed = time.time() - start_time
+        print(f"Run {i+1}/{len(param_values)} completed — elapsed {elapsed:.1f} s")
+
+# ==== Convert results to arrays ====
+for name in Y_results:
+    Y_results[name] = np.array(Y_results[name])
+    print(f"Output length for {name}: {len(Y_results[name])}")
+
+# ==== Morris analysis per output ====
+morris_results = {}
+for out_name, Y in Y_results.items():
+    if np.isnan(Y).any():
+        print(f"Warning: Missing results for {out_name}")
+        mean_val = np.nanmean(Y)
+        Y = np.nan_to_num(Y, nan=mean_val)
+
+    Si = morris_analyze.analyze(problem, param_values, Y, conf_level=0.95, num_levels=4, print_to_console=False)
+    morris_results[out_name] = Si
+
+    morris_df = pd.DataFrame({
+        'Parameter': problem['names'],
+        'Mu': Si['mu'],
+        'Mu_Star': Si['mu_star'],
+        'Sigma': Si['sigma']
+    })
+    morris_df.to_excel(f"morris_indices_{out_name}.xlsx", index=False)
+
+    print(f"\n--- Morris Sensitivity Results ({out_name}) ---")
+    for name, mu_star, sigma in zip(problem['names'], Si['mu_star'], Si['sigma']):
+        print(f"{name:25s} | Mu* = {mu_star:.4f} | Sigma = {sigma:.4f}")
+
+    # Plot Mu* values
+    plt.figure(figsize=(10, 6))
+    plt.bar(problem['names'], Si['mu_star'])
+    plt.ylabel("Mu* (Absolute Mean Elementary Effect)")
+    plt.title(f"Morris Sensitivity - Parameter Influence on {out_name}")
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    plt.show()
+
+print("✅ Analysis complete in", round(time.time() - start_time, 2), "seconds.")
