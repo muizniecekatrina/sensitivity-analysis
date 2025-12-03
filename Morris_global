@@ -11,28 +11,29 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ==== Define problem ====
 problem = {
-    'num_vars': 75,
+    'num_vars': 76,
     'names': ['NG', 'Dies', 'Coal', 'LPG', 'Prop', 'WC', 'FW', 'WP', 'GS', 'Peat', 'TDies', 'Petrol', 'El', 'LNG',
              'TLPG', 'CNG', 'AdBlue', 'RE', 'PRE', 'Non_RE', 'HE', 'Col', 'Steam', 'AL', 'AF', 'AAL', 'GL', 'FL',
              'DegrL', 'Bog', 'OrgAL', 'DC', 'CT', 'FP', 'Sow', 'SH', 'GT', 'HO', 'LH', 'BR', 'TR', 'DK', 'GOS', 'DE',
-             'FA', 'Infra', 'Wh', 'Pot', 'Oat', 'Vgt', 'Mix', 'Wood', 'BWh', 'Trit', 'FB', 'RS', 'CS',
+             'FA', 'Infra', 'Wh', 'Pot', 'Oat', 'Vgt', 'Mix', 'Wood', 'BWh', 'Trit', 'FB', 'RS', 'CS', 'FW_p',
              'Bar', 'SB', 'Rye', 'Peas', 'Lin', 'Hemp', 'Other', 'Lime', 'Dol', 'NH4NO3', '(NH4)2SO4', '(NH4)2HPO4',
              'CAN', 'Ca(NO3)2', 'KAS', '(NH4)(H2PO4)', 'NPK', 'Urea'],
-    'bounds': [[0, 200]] * 75
+    'bounds': [[0, 200]] * 76
 }
 
-# ==== Generate Morris sample ====
-param_values = morris.sample(problem, N=128, num_levels=4)
+# ==== Generate Morris sample (you can increase N later) ====
+param_values = morris.sample(problem, N=128, num_levels=8)
 print("Number of simulations:", len(param_values))
 
-wb = xw.Book(r"Source")
+# ==== Open Excel workbook ====
+wb = xw.Book(r"source")
 
 # ==== Improve Excel performance ====
 wb.app.calculation = 'manual'
 wb.app.screen_updating = False
 wb.app.display_alerts = False
 
-# ==== inputs per sheet ====
+# ==== Define inputs per sheet ====
 input_config = {
     "1. tvērums": ["C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17",
                    "C21", "C22", "C23", "C24", "C25", "C26", "C27"],
@@ -40,12 +41,12 @@ input_config = {
     "Zemes platības": ["C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15"],
     "Dzīvnieku uzturēšana": ["D8", "D9", "D10", "D11", "D12", "D13", "D14", "D15", "D16", "D17",
                             "D18", "D19", "D20", "D21"],
-    "Aramzemes": ["C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17",
+    "Aramzemes": ["C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
                   "C19", "C20", "C21", "C22", "C23", "C24", "C25", "C29", "C30", "C31", "C32", "C33",
                   "C34", "C35", "C36", "C37", "C38", "C39"]
 }
 
-# ==== outputs ====
+# ==== Define outputs per sheet ====
 output_config = {
     "Emisiju kopsavilkums": "C25"
 }
@@ -123,13 +124,81 @@ for out_name, Y in Y_results.items():
     for name, mu_star, sigma in zip(problem['names'], Si['mu_star'], Si['sigma']):
         print(f"{name:25s} | Mu* = {mu_star:.4f} | Sigma = {sigma:.4f}")
 
-    # Plot Mu* values
-    plt.figure(figsize=(10, 6))
-    plt.bar(problem['names'], Si['mu_star'])
-    plt.ylabel("Mu* (Absolute Mean Elementary Effect)")
-    plt.title(f"Morris Sensitivity - Parameter Influence on {out_name}")
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    plt.show()
+
+# Scatter plots of parameters vs output
+X = param_values
+input_names = problem['names']
+
+# Output name and values
+ghg_output_name = list(Y_results.keys())[0]
+Y = Y_results[ghg_output_name]
+
+print(f"Creating scatter plots for output: {ghg_output_name}")
+
+# Convert to DataFrame
+df = pd.DataFrame(param_values, columns=input_names)
+df['Output_Y'] = Y
+
+# --- Scatter plot grid ---
+n_params = len(input_names)
+n_cols = 3
+n_rows = (n_params + n_cols - 1) // n_cols
+
+fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(5*n_cols, 4*n_rows))
+axes = axes.flatten()
+
+for i, param in enumerate(input_names):
+    sns.regplot(
+        x=df[param], y=df['Output_Y'],
+        scatter_kws={'alpha': 0.3, 's': 15},
+        line_kws={'color': 'red'},
+        ax=axes[i]
+    )
+    axes[i].set_title(f"{param} vs {ghg_output_name}")
+    axes[i].set_xlabel("Parameter Value")
+    axes[i].set_ylabel(ghg_output_name)
+
+# Remove empty subplots
+for j in range(i + 1, len(axes)):
+    fig.delaxes(axes[j])
+
+plt.tight_layout()
+plt.show()
+
+# === EXPORT SCATTER-PLOT DATA TO EXCEL (MULTIPLE SHEETS) ====
+
+output_file = "scatter_plot_data.xlsx"
+writer = pd.ExcelWriter(output_file, engine="openpyxl")
+
+# --- Sheet 1: Full dataset (all parameters + output) ---
+df.to_excel(writer, sheet_name="All_Data", index=False)
+
+# --- Sheets 2+: One sheet per parameter ---
+for param in input_names:
+    sheet_df = pd.DataFrame({
+        param: df[param],
+        ghg_output_name: df["Output_Y"]
+    })
+    
+    # Clean invalid Excel sheet name characters
+    safe_sheet_name = param.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_").replace("[", "(").replace("]", ")")
+
+    writer.write_cells = False
+    sheet_df.to_excel(writer, sheet_name=safe_sheet_name[:31], index=False)  # Excel limit = 31 chars
+
+writer.close()
+
+print(f"📁 Scatter plot data exported to {output_file}")
+print(f"📄 Sheets created: 1 (All_Data) + {len(input_names)} parameter sheets")
+
+    
+# Plot Mu* values
+plt.figure(figsize=(10, 6))
+plt.bar(problem['names'], Si['mu_star'])
+plt.ylabel("Mu* (Absolute Mean Elementary Effect)")
+plt.title(f"Morris Sensitivity - Parameter Influence on {out_name}")
+plt.xticks(rotation=90)
+plt.tight_layout()
+plt.show()
 
 print("✅ Analysis complete in", round(time.time() - start_time, 2), "seconds.")
