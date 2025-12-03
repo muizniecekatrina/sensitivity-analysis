@@ -1,0 +1,243 @@
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import xlwings as xw
+import time
+from SALib.sample import saltelli
+from SALib.analyze import sobol
+import matplotlib.pyplot as plt
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# ==== Define problem ====
+problem = {
+    'num_vars': 15,
+    'names': ['Steam', 'HE', 'Non_RE', 'LNG', 'TLPG', 'CNG', 'AL', 'AF', 'AAL',
+              'DC', 'CT', 'HO', 'NH4NO3', 'KAS', 'CAN'],
+    'bounds': [[0, 200]] * 15
+}
+
+# ==== Generate parameter values ====
+param_values = saltelli.sample(problem, N=128, calc_second_order=True)
+print("Simulāciju skaits:", len(param_values))
+
+# ==== Open Excel workbook ====
+wb = xw.Book(r"source")
+
+# ==== Define input cells per sheet ====
+input_config = {
+    "1. tvērums": ["C24", "C25", "C26"],
+    "2. tvērums": ["C17", "C15", "C11"],
+    "Zemes platības": ["C7", "C8", "C9"],
+    "Dzīvnieku uzturēšana": ["D8", "D9", "D14"],
+    "Aramzemes": ["C31", "C34", "C36"]
+}
+
+# ==== Define outputs per sheet ====
+output_config = {
+    "Emisiju kopsavilkums": "C25"
+}
+
+# ==== Model function ====
+def model(x):
+    idx = 0
+    # Fill all inputs across sheets
+    for sheet_name, cells in input_config.items():
+        sh = wb.sheets[sheet_name]
+        for cell in cells:
+            sh[cell].value = x[idx]
+            idx += 1
+
+    # Wait for Excel to calculate
+    time.sleep(0.05)
+    wb.app.calculate()
+
+    # Collect outputs
+    results = {}
+    for sheet_name, cell in output_config.items():
+        result_sheet = wb.sheets[sheet_name]
+        val = result_sheet[cell].value
+        tries = 0
+        while (val is None or isinstance(val, str)) and tries < 10:
+            time.sleep(0.05)
+            val = result_sheet[cell].value
+            tries += 1
+        results[sheet_name] = float(val) if val is not None else 0.0
+
+    return results
+
+
+# ==== Run simulations ====
+Y_results = {name: [] for name in output_config.keys()}
+
+for x in param_values:
+    res = model(x)
+    for name, val in res.items():
+        Y_results[name].append(val)
+
+# Convert lists to numpy arrays
+for name in Y_results:
+    Y_results[name] = np.array(Y_results[name])
+    print(f"Y garums ({name}):", len(Y_results[name]))
+
+
+# ==== Sobol analysis for each output ====
+sobol_results = {}
+for out_name, Y in Y_results.items():
+    if np.isnan(Y).any():
+        print(f"Brīdinājums: bija tukši rezultāti {out_name}")
+        Y = np.nan_to_num(Y, nan=np.nanmean(Y))
+
+    Si = sobol.analyze(problem, Y, calc_second_order=True, print_to_console=False)
+    sobol_results[out_name] = Si
+
+    # --- Option 1: Only S1 and ST (recommended) ---
+    sobol_df = pd.DataFrame({
+        'Parameter': problem['names'],
+        'S1': Si['S1'],
+        'S1_conf': Si['S1_conf'],
+        'ST': Si['ST'],
+        'ST_conf': Si['ST_conf']
+    })
+
+    sobol_df.to_excel(f"sobol_indices2_{out_name}.xlsx", index=False)
+
+    # --- Option 2 (optional): also save S2 in a separate table ---
+    S2_pairs = []
+    for i, name_i in enumerate(problem['names']):
+        for j, name_j in enumerate(problem['names']):
+            if j > i:  # only upper triangle
+                S2_pairs.append({
+                    "Param1": name_i,
+                    "Param2": name_j,
+                    "S2": Si['S2'][i, j]
+                })
+    S2_df = pd.DataFrame(S2_pairs)
+    S2_df.to_excel(f"sobol_indices2_{out_name}_S2.xlsx", index=False)
+
+    # --- Print results ---
+    print(f"\n--- Sobol analīzes rezultāti ({out_name}) ---")
+    for name, s1, st in zip(problem['names'], Si['S1'], Si['ST']):
+        print(f"{name:25s} | S1 = {s1:.4f} | ST = {st:.4f}")
+
+    # --- Bar chart ---
+    plt.figure(figsize=(9, 5))
+    plt.bar(problem['names'], Si['S1'])
+    plt.ylabel("First-order Sobol sensitivity index")
+    plt.title(f"Parameter impact on {out_name}")
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    plt.show()
+
+    # --- Scatter plots ---
+    df = pd.DataFrame(param_values, columns=problem['names'])
+    df['Output_Y'] = Y
+
+    n_params = len(problem['names'])
+    n_cols = 3
+    n_rows = (n_params + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(5*n_cols, 4*n_rows))
+    axes = axes.flatten()
+
+    for i, param in enumerate(problem['names']):
+        sns.regplot(
+            x=df[param], y=df['Output_Y'],
+            scatter_kws={'alpha': 0.3, 's': 15}, line_kws={'color': 'red'}, ax=axes[i]
+        )
+        axes[i].set_title(f"{param} vs {out_name}")
+        axes[i].set_xlabel("Parameter Value")
+        axes[i].set_ylabel(out_name)
+
+    for j in range(i+1, len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.tight_layout()
+    plt.show()
+
+# === EXPORT FULL SOBOL ANALYSIS DATA TO EXCEL (MULTI-SHEET) ==
+
+import openpyxl
+
+output_file = "sobol_full_output.xlsx"
+writer = pd.ExcelWriter(output_file, engine="openpyxl")
+
+names = problem["names"]
+n = len(names)
+
+# -------------------------
+# Sheet 1: Summary
+# -------------------------
+summary_df = pd.DataFrame({
+    "Parameter": names,
+    "S1": Si["S1"],
+    "S1_conf": Si["S1_conf"],
+    "ST": Si["ST"],
+    "ST_conf": Si["ST_conf"]
+})
+
+summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+# -------------------------
+# Sheet 2: S1 values (bar chart input)
+# -------------------------
+s1_df = pd.DataFrame({
+    "Parameter": names,
+    "S1": Si["S1"],
+    "S1_conf": Si["S1_conf"]
+})
+s1_df.to_excel(writer, sheet_name="S1_indices", index=False)
+
+# -------------------------
+# Sheet 3: ST values
+# -------------------------
+st_df = pd.DataFrame({
+    "Parameter": names,
+    "ST": Si["ST"],
+    "ST_conf": Si["ST_conf"]
+})
+st_df.to_excel(writer, sheet_name="ST_indices", index=False)
+
+# -------------------------
+# Sheet 4: S2 second-order matrix
+# -------------------------
+# SALib outputs S2 as a lower-triangular matrix with NaNs
+s2_matrix = pd.DataFrame(Si["S2"], columns=names, index=names)
+s2_matrix.to_excel(writer, sheet_name="S2_matrix")
+
+# -------------------------
+# Sheets 5–N: One sheet per parameter
+# -------------------------
+for i, p in enumerate(names):
+
+    # All second-order effects where parameter p interacts with others
+    interactions = []
+    for j, other in enumerate(names):
+        if not np.isnan(Si["S2"][i, j]):
+            interactions.append([p, other, Si["S2"][i, j]])
+
+    param_df = pd.DataFrame(interactions, columns=["Parameter", "Interacts_with", "S2_value"])
+
+    # Add S1 and ST values for the parameter
+    param_df.loc[len(param_df)] = [p, "S1", Si["S1"][i]]
+    param_df.loc[len(param_df)] = [p, "ST", Si["ST"][i]]
+
+    safe_sheet_name = p.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_")
+    writer.write_cells = False
+    param_df.to_excel(writer, sheet_name=safe_sheet_name[:31], index=False)
+
+writer.close()
+
+print(f"Sobol data exported to {output_file}")
+print(f"Sheets created: 4 + {n} parameter sheets")
+
+
+#Input-output -------------
+raw_df = pd.DataFrame(param_values, columns=problem["names"])
+raw_df["Output_Y"] = Y
+
+raw_df.to_excel("sobol_input_output_data.xlsx", index=False)
+
+print("Raw input-output dataset exported to sobol_input_output_data.xlsx")
+print("Rows:", len(raw_df))
