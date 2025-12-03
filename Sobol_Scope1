@@ -23,7 +23,8 @@ param_values = saltelli.sample(problem, N=128, calc_second_order=True)
 print("Simulāciju skaits:", len(param_values))
 
 
-wb = xw.Book(r"Source")
+# Atver Excel rīku
+wb = xw.Book(r"C:\Users\katem\Desktop\LBTU\MAĢISTRS\Rīki\V1.xlsx")
 sheet = wb.sheets["1. tvērums"]
 
 # Definē modeli
@@ -124,3 +125,89 @@ for j in range(i+1, len(axes)):
 
 plt.tight_layout()
 plt.show()
+
+# === EXPORT FULL SOBOL ANALYSIS DATA TO EXCEL (MULTI-SHEET) ==
+
+import openpyxl
+
+output_file = "sobol_full_output.xlsx"
+writer = pd.ExcelWriter(output_file, engine="openpyxl")
+
+names = problem["names"]
+n = len(names)
+
+# -------------------------
+# Sheet 1: Summary
+# -------------------------
+summary_df = pd.DataFrame({
+    "Parameter": names,
+    "S1": Si["S1"],
+    "S1_conf": Si["S1_conf"],
+    "ST": Si["ST"],
+    "ST_conf": Si["ST_conf"]
+})
+
+summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+# -------------------------
+# Sheet 2: S1 values (bar chart input)
+# -------------------------
+s1_df = pd.DataFrame({
+    "Parameter": names,
+    "S1": Si["S1"],
+    "S1_conf": Si["S1_conf"]
+})
+s1_df.to_excel(writer, sheet_name="S1_indices", index=False)
+
+# -------------------------
+# Sheet 3: ST values
+# -------------------------
+st_df = pd.DataFrame({
+    "Parameter": names,
+    "ST": Si["ST"],
+    "ST_conf": Si["ST_conf"]
+})
+st_df.to_excel(writer, sheet_name="ST_indices", index=False)
+
+# -------------------------
+# Sheet 4: S2 second-order matrix
+# -------------------------
+# SALib outputs S2 as a lower-triangular matrix with NaNs
+s2_matrix = pd.DataFrame(Si["S2"], columns=names, index=names)
+s2_matrix.to_excel(writer, sheet_name="S2_matrix")
+
+# -------------------------
+# Sheets 5–N: One sheet per parameter
+# -------------------------
+for i, p in enumerate(names):
+
+    # All second-order effects where parameter p interacts with others
+    interactions = []
+    for j, other in enumerate(names):
+        if not np.isnan(Si["S2"][i, j]):
+            interactions.append([p, other, Si["S2"][i, j]])
+
+    param_df = pd.DataFrame(interactions, columns=["Parameter", "Interacts_with", "S2_value"])
+
+    # Add S1 and ST values for the parameter
+    param_df.loc[len(param_df)] = [p, "S1", Si["S1"][i]]
+    param_df.loc[len(param_df)] = [p, "ST", Si["ST"][i]]
+
+    safe_sheet_name = p.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_")
+    writer.write_cells = False
+    param_df.to_excel(writer, sheet_name=safe_sheet_name[:31], index=False)
+
+writer.close()
+
+print(f"Sobol data exported to {output_file}")
+print(f"Sheets created: 4 + {n} parameter sheets")
+
+
+#Input-output -------------
+raw_df = pd.DataFrame(param_values, columns=problem["names"])
+raw_df["Output_Y"] = Y
+
+raw_df.to_excel("sobol_input_output_data.xlsx", index=False)
+
+print("Raw input-output dataset exported to sobol_input_output_data.xlsx")
+print("Rows:", len(raw_df))
