@@ -23,7 +23,7 @@ print("Simulāciju skaits:", len(param_values))
 
 
 # Atver Excel rīku
-wb = xw.Book(r"C:\Users\katem\Desktop\LBTU\MAĢISTRS\Rīki\V1.xlsx")
+wb = xw.Book(r"source")
 sheet = wb.sheets["2. tvērums"]
 
 # Definē modeli
