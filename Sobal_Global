@@ -12,10 +12,10 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ==== Define problem ====
 problem = {
-    'num_vars': 15,
+    'num_vars': 18,
     'names': ['Steam', 'HE', 'Non_RE', 'LNG', 'TLPG', 'CNG', 'AL', 'AF', 'AAL',
-              'DC', 'CT', 'HO', 'NH4NO3', 'KAS', 'CAN'],
-    'bounds': [[0, 200]] * 15
+              'DC', 'CT', 'HO', 'NH4NO3', 'KAS', 'CAN', 'BWh', 'Peas', 'RS'],
+    'bounds': [[0, 200]] * 18
 }
 
 # ==== Generate parameter values ====
@@ -23,7 +23,7 @@ param_values = saltelli.sample(problem, N=128, calc_second_order=True)
 print("Simulāciju skaits:", len(param_values))
 
 # ==== Open Excel workbook ====
-wb = xw.Book(r"source")
+wb = xw.Book(r"C:\Users\katem\Desktop\LBTU\MAĢISTRS\Rīki\V1.xlsx")
 
 # ==== Define input cells per sheet ====
 input_config = {
@@ -31,7 +31,7 @@ input_config = {
     "2. tvērums": ["C17", "C15", "C11"],
     "Zemes platības": ["C7", "C8", "C9"],
     "Dzīvnieku uzturēšana": ["D8", "D9", "D14"],
-    "Aramzemes": ["C31", "C34", "C36"]
+    "Aramzemes": ["C31", "C34", "C36", "C13", "C22", "C16"]
 }
 
 # ==== Define outputs per sheet ====
