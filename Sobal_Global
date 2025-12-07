@@ -23,7 +23,7 @@ param_values = saltelli.sample(problem, N=128, calc_second_order=True)
 print("Simulāciju skaits:", len(param_values))
 
 # ==== Open Excel workbook ====
-wb = xw.Book(r"C:\Users\katem\Desktop\LBTU\MAĢISTRS\Rīki\V1.xlsx")
+wb = xw.Book(r"source")
 
 # ==== Define input cells per sheet ====
 input_config = {
